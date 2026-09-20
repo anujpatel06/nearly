@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { paths } from '../server/paths.mjs';
+import { judge, judgeEnabled, RANK } from './judge.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const recordingsDir = paths.recordings();
@@ -684,6 +685,29 @@ if (!noAudio) {
   for (const s of sb.scenes) if (s.audioS) s.durS = s.audioS + 0.8;
 }
 sb.totalS = sb.scenes.reduce((n, s) => n + s.durS, 0);
+
+// A second opinion, if one was asked for: what each stopped command would have
+// destroyed, and whether the work matches what was asked. Ordering and labels
+// only — every number above is still counted from the recording.
+if (judgeEnabled()) {
+  try {
+    const j = await judge(sb);
+    // An answer that carried nothing usable is not a judgement. Saying the record
+    // was judged when nothing came back would put a model's name on a page that
+    // shows none of its work.
+    if (j && (j.kinds.some(Boolean) || j.attention || j.drift.length)) {
+      sb.judgement = { by: j.by, attention: j.attention, drift: j.drift, usage: j.usage };
+      const outcome = sb.scenes.find((x) => x.kind === 'outcome');
+      if (outcome) {
+        outcome.notDone.forEach((n, i) => { if (j.kinds[i]) { n.kind = j.kinds[i].kind; n.kindConfidence = j.kinds[i].confidence; } });
+        // Worst first. An agent deleting its own scratch file should never be the
+        // line a reviewer reads before `rm -rf ~`.
+        outcome.notDone.sort((x, y) => RANK.indexOf(x.kind ?? 'unclear') - RANK.indexOf(y.kind ?? 'unclear'));
+      }
+      console.log(`judged by ${j.by}${j.attention ? `: ${j.attention.says}` : ''}`);
+    }
+  } catch (e) { console.warn(`judgement skipped (${e.message})`); }
+}
 
 mkdirSync(outDir, { recursive: true });
 const storyDirOut = paths.records();

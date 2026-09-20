@@ -10,6 +10,7 @@
 //   nearly agents       which agents this repo is gated for
 //   nearly doctor       why nothing is showing up
 //   nearly pause        stop gating every session, now; nearly resume undoes it
+//   nearly judge <key>  have TypeSafe's Jev label what each refusal would have hit
 //   nearly voices       list the narration voices you have
 //   nearly server       run the server in the foreground (it self-starts otherwise)
 //   nearly hook <ev>    internal: what the Claude Code hooks call
@@ -92,6 +93,30 @@ switch (cmd) {
 
   // Every hook checks for this file before anything else, so it reaches sessions
   // that are already running, which no setting or environment variable can.
+  // Off by default, and a key is the whole opt-in: with one, a finished record is
+  // sent to TypeSafe at push time to be labelled and ordered. Nothing is sent
+  // during a session, and no decision is ever the model's. `nearly judge off` stops it.
+  case 'judge': {
+    const { readFileSync, writeFileSync, existsSync } = await import('node:fs');
+    const { paths } = await import('../server/paths.mjs');
+    const f = paths.config();
+    let cfg = {};
+    try { if (existsSync(f)) cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { /* start fresh */ }
+    const arg = rest[0];
+    if (!arg) {
+      console.log(cfg.typesafeKey || process.env.NEARLY_TYPESAFE_KEY
+        ? 'Records are judged at push time: each refusal is labelled with what it would have hit, worst first.'
+        : 'Off. `nearly judge <typesafe-api-key>` turns it on; the record itself works without it.');
+      return process.exit(0);
+    }
+    if (arg === 'off') { delete cfg.typesafeKey; writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n'); console.log('Judgement off. Records are still built and posted.'); return process.exit(0); }
+    cfg.typesafeKey = arg;
+    writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
+    console.log(`Saved in ${f}. From the next push, each refusal is labelled with what it would have hit.`);
+    console.log('Only finished records leave this machine, never a tool call, and never a decision.');
+    return process.exit(0);
+  }
+
   case 'pause': case 'resume': {
     const { mkdirSync, writeFileSync, rmSync } = await import('node:fs');
     const { homedir } = await import('node:os');
@@ -139,6 +164,7 @@ switch (cmd) {
   nearly agents       which agents this repo is gated for
   nearly doctor       why nothing is showing up
   nearly pause        stop gating every session right now (nearly resume)
+  nearly judge <key>  label refusals with what they would have hit (TypeSafe)
   nearly voices       list the narration voices you have
   nearly server       run the server in the foreground
 `);

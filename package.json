@@ -1,6 +1,6 @@
 {
   "name": "nearly-cli",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "description": "A pull request tells you what changed. Nearly tells you what nearly happened: the commands a human refused, the pushes policy blocked, the turns rolled back.",
   "type": "module",
   "bin": {
@@ -34,6 +34,6 @@
   },
   "homepage": "https://anujpatel06.github.io/nearly/",
   "scripts": {
-    "test": "node --test --test-concurrency=1 test/policy.test.mjs test/server.test.mjs test/record.test.mjs test/resilience.test.mjs test/detect.test.mjs test/adapters.test.mjs test/spawn.test.mjs test/stale-server.test.mjs test/outside.test.mjs test/posting.test.mjs test/mismatch.test.mjs test/runtime.test.mjs"
+    "test": "node --test --test-concurrency=1 test/policy.test.mjs test/server.test.mjs test/record.test.mjs test/resilience.test.mjs test/detect.test.mjs test/adapters.test.mjs test/spawn.test.mjs test/stale-server.test.mjs test/outside.test.mjs test/posting.test.mjs test/mismatch.test.mjs test/judge.test.mjs test/runtime.test.mjs"
   }
 }

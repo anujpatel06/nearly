@@ -42,6 +42,17 @@ const cover = sb.scenes.find((s) => s.kind === 'cover');
 const outcome = sb.scenes.find((s) => s.kind === 'outcome');
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 
+// Plain words for the labels a judgement puts on a refusal.
+const WOULD_HAVE = {
+  user_data: "someone's own files",
+  repo_source: 'source or uncommitted work in this repo',
+  shared_history: 'history other people already have',
+  secret_exposure: 'credentials or secrets',
+  build_output: 'build output',
+  own_scratch: "the agent's own scratch files",
+  unclear: 'something the command does not make clear',
+};
+
 const lines = [];
 lines.push(sb.runs > 1
   ? `### Session record for \`${sb.branch}\`: ${cover.title}`
@@ -59,7 +70,19 @@ lines.push('');
 if (outcome?.notDone?.length) {
   lines.push(`> **${outcome.notDone.length} thing${outcome.notDone.length > 1 ? 's' : ''} the agent wanted to do did not happen.** The diff cannot show you this.`);
   lines.push('>');
-  for (const n of outcome.notDone) lines.push(`> - \`${n.tool}\` · \`${n.what}\` — ${n.by === 'policy' ? 'blocked by policy' : n.by === 'timeout' ? 'nobody answered, so it was refused' : 'refused by the supervisor'}`);
+  for (const n of outcome.notDone) {
+    const by = n.by === 'policy' ? 'blocked by policy' : n.by === 'timeout' ? 'nobody answered, so it was refused' : 'refused by the supervisor';
+    // What it would have destroyed, when a judgement was asked for. Worst first,
+    // because a scratch file and a home directory are not the same news.
+    lines.push(`> - \`${n.tool}\` · \`${n.what}\` — ${by}${n.kind ? ` · would have hit **${WOULD_HAVE[n.kind] || n.kind}**` : ''}`);
+  }
+  lines.push('');
+}
+if (sb.judgement?.attention) lines.push(`> **Worth a reviewer's time:** ${sb.judgement.attention.says}`, '');
+if (sb.judgement?.drift?.length) {
+  lines.push(`> **${sb.judgement.drift.length} round${sb.judgement.drift.length > 1 ? 's' : ''} of work went past what was asked for:**`);
+  lines.push('>');
+  for (const d of sb.judgement.drift) lines.push(`> - round ${d.round}, asked for: \`${d.instruction.replace(/`/g, "'").slice(0, 120)}\``);
   lines.push('');
 }
 lines.push('| ' + cover.stats.map(([k]) => k).join(' | ') + ' |');
@@ -72,7 +95,7 @@ sb.scenes.forEach((s, i) => { lines.push(`${i + 1}. **${s.kind}** — ${s.narrat
 lines.push('');
 lines.push('</details>');
 lines.push('');
-lines.push(`<sub>Every number above was computed from the session recording. ${sb.polished ? 'Sentences were rewritten by a model; facts were not.' : 'No model wrote any of it.'}${urlBase ? '' : ' The narrated version is not published anywhere; `nearly publish` puts it on GitHub Pages.'}</sub>`);
+lines.push(`<sub>Every number above was computed from the session recording. ${sb.polished ? 'Sentences were rewritten by a model; facts were not.' : 'No model wrote any of it.'}${sb.judgement ? ` What each stopped command would have hit, the ordering, and the two notes above are judgements from ${sb.judgement.by}, not counts.` : ''}${urlBase ? '' : ' The narrated version is not published anywhere; `nearly publish` puts it on GitHub Pages.'}</sub>`);
 // A hidden marker so we can find our own comment again on the next push and
 // edit it, instead of stacking a new one on every push until nobody reads any.
 // Deliberately carries no product name. This string is how a comment is

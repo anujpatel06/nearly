@@ -424,6 +424,45 @@ Today the poster speaks GitHub, through the `gh` CLI. Bitbucket and GitLab each
 need their own small poster; the record itself is provider-agnostic, since it is
 just a hosted page and a link.
 
+## A second opinion on a finished record (off by default)
+
+Counting cannot tell an agent deleting its own scratch file from an agent deleting
+your home directory. Both are "1 action never happened", and on a real branch of
+mine the scratch file was the line a reviewer read first. So Nearly can ask
+[TypeSafe's Jev](https://typesafe.ai) three things about a record that is already
+built, and nothing else:
+
+- for each refusal, what it would have hit — someone's own files, shared history,
+  credentials, repo source, build output, the agent's own scratch. The record then
+  leads with the worst one.
+- how much of a reviewer's attention the branch deserves, in one line.
+- whether each round of work matches the instruction that produced it. Nearly is
+  the only thing holding both halves, and drift between them is what a diff cannot
+  show you.
+
+```bash
+nearly judge <typesafe-api-key>     # on, for this machine
+nearly judge                        # what it is doing
+nearly judge off                    # off again; records still build and post
+```
+
+Four rules, each of them a consequence of what Nearly is:
+
+- **Never on the path of a tool call.** It runs once per record, at push time. A
+  test asserts the hook path does not so much as import it.
+- **Off unless you turn it on.** Commands and instructions would leave your
+  machine, and a local gate is the whole pitch. A key is the opt-in; the home
+  directory is replaced with `~` before anything is sent, and diffs, file contents
+  and transcripts are never sent at all.
+- **It cannot change a decision.** Everything it sees has already happened. It
+  labels and orders a record; the policy alone decides what never runs.
+- **It fails open and silent.** No key, no network, a slow answer, a malformed
+  one: the record is exactly what it would have been. Answers are cached per
+  branch, so a second push asks nothing again.
+
+The comment says which lines came from a judgement and which were counted, because
+a record whose provenance is unclear is worth less than one that admits it.
+
 ## Publish the records
 
 Recap pages are self-contained HTML, so GitHub Pages hosts them for free and the links in pull request comments resolve for anyone who can see the repo.

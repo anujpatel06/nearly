@@ -147,6 +147,13 @@ if (existsSync(join(process.env.NEARLY_HOME || join(homedir(), '.nearly'), 'paus
   }
 }
 
+// Judgement is off unless a key was saved, and that is worth saying once here
+// rather than leaving someone to wonder why refusals are unlabelled.
+{
+  const { judgeEnabled } = await import('./judge.mjs');
+  if (judgeEnabled()) say(true, 'refusals labelled', 'judged at push time by TypeSafe');
+}
+
 // 3 — the server, and whether it is this build
 let health = null;
 try {

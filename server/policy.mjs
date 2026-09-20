@@ -158,6 +158,24 @@ function lex(src) {
       let op = c; i++;
       if (src[i] === '>' || (c === '<' && src[i] === '<')) { op += src[i]; i++; }
       if (src[i] === '&') { op += '&'; i++; }
+      // A here-document is text handed to a program, not more shell. Everything
+      // from the delimiter to the line that closes it is skipped: a Python script
+      // written with `cat > f.py <<'PY'` used to be lexed as commands, and a `>`
+      // comparison inside it read as a redirect that overwrites a file.
+      if (op === '<<') {
+        let j = i;
+        if (src[j] === '-') j++;
+        while (j < src.length && (src[j] === ' ' || src[j] === '\t')) j++;
+        const m = /^(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(src.slice(j));
+        if (m) {
+          const body = src.indexOf('\n', j + m[0].length);
+          const close = body === -1 ? -1 : src.indexOf(`\n${m[2]}`, body);
+          out.push({ t: 'op', v: op });
+          out.push({ t: 'word', v: m[2], subs: [] });          // the delimiter, as its target
+          i = close === -1 ? src.length : close + 1 + m[2].length;
+          continue;
+        }
+      }
       out.push({ t: 'op', v: op });
       continue;
     }
@@ -397,7 +415,11 @@ function secretPath(raw, st) {
   const home = os.homedir();
   const underHomeSecret = HOME_SECRETS.some((h) => insideDir(path.join(home, h), abs));
   if (/[*?[]/.test(name)) {
-    return ['.env', '.env.local', '.env.production'].some((c) => globRe(name).test(c)) ? s : null;
+    // Shell globs do not match a leading dot unless you write one. Without that,
+    // `scripts/*` was read as possibly naming `.env`, and grepping a folder of
+    // scripts was refused as reading secrets.
+    const reachable = (c) => !c.startsWith('.') || name.startsWith('.');
+    return ['.env', '.env.local', '.env.production'].some((c) => reachable(c) && globRe(name).test(c)) ? s : null;
   }
   if (!underHomeSecret && !(SECRET_NAME.test(name) && !envTemplate(name))) return null;
   if (st.root && insideDir(st.root, abs) && existsSync(abs)) {
@@ -571,8 +593,13 @@ function stageReason(stage, pipe, idx, st, depth) {
   for (const r of stage.redirects) {
     // `>` destroys what was there; `>>` only adds to it.
     if (r.op === '>' || r.op === '>|') {
-      const why = deleteReason(r.target, st, false);
-      if (why) return why.replace(/^deletes/, 'overwrites');
+      const abs = (() => { const x = expand(r.target, st); return x.path ? path.resolve(st.cwd || '/', x.path) : null; })();
+      // Creating a file destroys nothing, and nothing here can undo a file that
+      // never existed. Only what is already there is worth stopping.
+      if (!abs || existsSync(abs)) {
+        const why = deleteReason(r.target, st, false);
+        if (why) return why.replace(/^deletes/, 'overwrites');
+      }
     }
     if ((r.op === '<' || r.op === '<<') && (READERS.has(prog) || RUNNERS.has(prog) || SENDERS.has(prog))) {
       const s = secretPath(r.target, st);

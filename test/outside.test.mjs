@@ -121,6 +121,27 @@ test('once it is gated, a destructive call that never mentions the repo is still
   assert.equal(decisionOf(out), 'deny', `rm -rf in the home folder was not refused: ${out}`);
 });
 
+test('the repo it is working in is the boundary, not the folder it was opened in', async () => {
+  // Straight at the server, with paths that do not exist: a temp folder is
+  // deletable by design, so a box under /tmp cannot tell this apart. This is the
+  // real shape — a repo inside an ordinary folder that is not itself a repo.
+  const elsewhere = join(homedir(), 'projects-for-this-test');
+  const inside = join(elsewhere, 'app');
+  const decide = async (query, command) => {
+    const res = await fetch(`http://127.0.0.1:${PORT}/hooks/pre-tool?${query}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session_id: `boundary-${Math.random()}`, tool_use_id: 't', cwd: elsewhere, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }),
+    });
+    return (await res.json()).hookSpecificOutput?.permissionDecision;
+  };
+  const rm = (p) => 'rm' + ' -rf ' + p;
+  assert.equal(await decide(`attach=alpha&auto=1&outside=1&repo=${encodeURIComponent(inside)}`, rm(join(inside, 'dist'))), 'allow',
+    'build output inside the session\'s own repo was refused');
+  assert.equal(await decide(`attach=alpha&auto=1&outside=1&repo=${encodeURIComponent(inside)}`, rm(join(elsewhere, 'another-project'))), 'deny',
+    'the boundary did not stop at the repo');
+});
+
 test('a relative cd into the repo counts as working in it', async () => {
   const out = await fireOut(['pre-tool'],
     call('outer-cd', 'c1', 'Bash', { command: 'cd alpha && git status' }), { CLAUDE_PROJECT_DIR: outer });

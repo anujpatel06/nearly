@@ -584,9 +584,19 @@ function stageReason(stage, pipe, idx, st, depth) {
   if (ESCALATE.has(prog)) return 'runs as root';
 
   // Something that runs code, fed by something that fetched it.
-  const fedDownload = pipe.slice(0, idx).some((s) => DOWNLOADERS.has(unwrap(s.words).prog))
-    || stage.subs.some((body) => pipelines(body).some((p) => p.some((q) => DOWNLOADERS.has(unwrap(q.words).prog))));
-  if (RUNNERS.has(prog) && fedDownload) return 'runs a download without anyone reading it first';
+  const fedPipe = pipe.slice(0, idx).some((s) => DOWNLOADERS.has(unwrap(s.words).prog));
+  // A download inside the command itself — a substitution — becomes the text or the
+  // file the program is told to run. That is running the download, whatever the
+  // program is.
+  const fedSub = stage.subs.some((body) => pipelines(body).some((p) => p.some((q) => DOWNLOADERS.has(unwrap(q.words).prog))));
+  // Down a pipe it is different. A program given its own script — inline with a
+  // flag, or as a file to run — treats the download as data arriving on stdin, and
+  // the code that actually runs is right there in the command where these rules can
+  // read it. Refusing that refused reading a JSON endpoint, which is ordinary work.
+  // With no script of its own, the program runs what arrives, and that is the one
+  // this rule is for.
+  const runsStdin = !interpreterCode(prog, argv) && !argv.slice(1).some((a) => !a.startsWith('-') && a !== '-');
+  if (RUNNERS.has(prog) && (fedSub || (fedPipe && runsStdin))) return 'runs a download without anyone reading it first';
 
   if (SHELLS.has(prog)) {
     const k = argv.findIndex((a, n) => n > 0 && (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(a) || /^\/[ck]$/i.test(a) || /^-command$/i.test(a)));
@@ -806,24 +816,28 @@ function analyze(src, st, depth = 0) {
 // The repo is the boundary, and it is the git root — not wherever the command
 // happens to run. Treating the working directory as the repo refused
 // `rm -rf ../dist` from a subfolder and allowed `rm -rf Library` from $HOME.
-function stateFor(cwd) {
+// `repo` is the repository this session belongs to, which is not always the one
+// the command runs in: a session opened a folder above a repo works inside it with
+// a working directory that is not a repository at all. Without this, every delete
+// inside that repo was refused for being outside it.
+function stateFor(cwd, repo) {
   const dir = cwd ? (real(cwd) || cwd) : null;
-  const top = dir ? git(dir, ['rev-parse', '--show-toplevel']) : null;
+  const top = (dir ? git(dir, ['rev-parse', '--show-toplevel']) : null) || repo || null;
   return { cwd: dir, root: top ? (real(top) || top) : null, branch: null, gitDir: null, aliases: {}, vars: {} };
 }
 
 // The reason a command must never run, or null. Exported for the tests, which
 // hold both halves of the promise: the destructive refused, the ordinary not.
-export function neverReason(command, cwd) {
-  return analyze(command, stateFor(cwd));
+export function neverReason(command, cwd, repo) {
+  return analyze(command, stateFor(cwd, repo));
 }
 
 // A file tool pointed at a secret. Refusing `cat .env` while the Read tool
 // handed back the same file protected nothing — a live session did exactly that.
-export function fileReason(tool, input, cwd) {
+export function fileReason(tool, input, cwd, repo) {
   const fp = input?.file_path ?? input?.path ?? input?.notebook_path;
   if (typeof fp !== 'string' || !fp) return null;
-  const st = stateFor(cwd);
+  const st = stateFor(cwd, repo);
   const s = secretPath(fp, st);
   if (!s) return null;
   const x = expand(fp, st);
@@ -863,14 +877,18 @@ export function ruleKey(hook) {
 export function classify(hook, rules = new Map()) {
   const t = hook.tool_name;
   const input = hook.tool_input;
+  // Which repository this session belongs to. For a session started in the repo
+  // it is the working directory's own; for one started elsewhere the server knows
+  // it and says so, and without that the repo's own files count as somebody else's.
+  const repo = hook.repo_root || null;
   // Any tool carrying a command runs it, whatever it is called. Only checking
   // `Bash` let a shell-running MCP tool skip every rule here.
   if (input && typeof input.command === 'string') {
-    const why = neverReason(input.command, hook.cwd);
+    const why = neverReason(input.command, hook.cwd, repo);
     if (why) return { tier: 'never', reason: why };
   }
   if (['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Grep'].includes(t)) {
-    const why = fileReason(t, input, hook.cwd);
+    const why = fileReason(t, input, hook.cwd, repo);
     if (why) return { tier: 'never', reason: why };
   }
   const key = ruleKey(hook);

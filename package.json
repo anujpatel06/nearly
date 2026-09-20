@@ -1,6 +1,6 @@
 {
   "name": "nearly-cli",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "description": "A pull request tells you what changed. Nearly tells you what nearly happened: the commands a human refused, the pushes policy blocked, the turns rolled back.",
   "type": "module",
   "bin": {

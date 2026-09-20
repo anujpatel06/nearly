@@ -511,6 +511,10 @@ const server = http.createServer(async (req, res) => {
       const unattended = sidParam
         ? url.searchParams.get('auto') === '1'
         : url.searchParams.get('auto') === '1' || !(supervise || (outside && s && s.auto === false));
+      // A session working in a repo it was not started in is judged against that
+      // repo, not against whatever folder it happens to be sitting in. Otherwise
+      // deleting build output inside the repo reads as deleting someone else's files.
+      if (s && s.outside && s.worktree) hook.repo_root = s.worktree;
       let { tier, reason } = classifyWith(hook, rules);
       if (unattended && tier === 'ask') { tier = 'log'; reason = 'allowed unattended — nobody was asked'; }
       const id = hook.tool_use_id || randomUUID();

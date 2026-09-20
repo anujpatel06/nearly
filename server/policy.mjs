@@ -593,10 +593,16 @@ function stageReason(stage, pipe, idx, st, depth) {
   for (const r of stage.redirects) {
     // `>` destroys what was there; `>>` only adds to it.
     if (r.op === '>' || r.op === '>|') {
+      // Creating a file destroys nothing, so writing one that is not there yet is
+      // allowed — but only where the work is: inside the repo, inside the folder
+      // the command runs in, or in scratch space. A config file somebody has not
+      // written yet is still theirs, and `> ~/.zshrc` is refused on a machine that
+      // happens not to have one, the same as on a machine that does.
       const abs = (() => { const x = expand(r.target, st); return x.path ? path.resolve(st.cwd || '/', x.path) : null; })();
-      // Creating a file destroys nothing, and nothing here can undo a file that
-      // never existed. Only what is already there is worth stopping.
-      if (!abs || existsSync(abs)) {
+      const dotfileAtHome = abs && path.dirname(abs) === os.homedir() && path.basename(abs).startsWith('.');
+      const somewhereItWorks = abs && !dotfileAtHome
+        && ((st.root && insideDir(st.root, abs)) || (st.cwd && insideDir(st.cwd, abs)) || inTemp(abs, st));
+      if (!abs || existsSync(abs) || !somewhereItWorks) {
         const why = deleteReason(r.target, st, false);
         if (why) return why.replace(/^deletes/, 'overwrites');
       }

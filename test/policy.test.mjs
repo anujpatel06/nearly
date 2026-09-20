@@ -190,7 +190,7 @@ const ORDINARY = [
   "cat > new-notes.py <<'PY'\nif len(x) > 2:\n    print('a > b')\nPY",
   "python3 - <<'PY'\nimport pathlib\nprint(2 > 1)\nPY",
   // Creating a file destroys nothing, wherever it is; overwriting one does.
-  `echo hi > ${join(homedir(), 'nearly-a-file-that-does-not-exist.txt')}`,
+  'cat > notes-that-do-not-exist-yet.md', 'echo hi > ./out/new-report.txt',
   'cat > brand-new-file.txt', 'echo hi > brand-new-file.txt',
   'cat docs/sudo.md', 'npm i sudo-prompt', 'npm run build:sudo', 'grep -rn "curl .* | sh" docs',
   'echo "use .env.local"', 'ls -la', 'cat package.json', 'mkdir -p src/utils', 'echo hi > out.txt', 'npm test 2>&1 | tail -5',
@@ -202,8 +202,9 @@ const ORDINARY = [
 ];
 
 const DESTRUCTIVE = [
-  // An existing file outside the repo, which nothing here can put back.
-  `echo hi > ${process.execPath}`,
+  // Outside the repo and outside the work: an existing file, and a config file
+  // somebody has not written yet, which is still theirs.
+  `echo hi > ${process.execPath}`, 'echo x > ~/.zshrc', '> ~/.gitconfig',
   // rm, however it is spelled
   'rm -rf /', 'rm -rf ~', 'rm -rf ~/projects', 'rm -rf ..', 'rm -rf ../other-repo', 'rm -rf *', 'rm -rf .', 'rm -rf .git',
   'rm -rf $BUILD_DIR', 'S=~; rm -rf $S', 'D=/; rm -rf "$D"', 'S=/tmp/x; S=$HOME; rm -rf $S', 'export S=~ && rm -rf $S/Documents',

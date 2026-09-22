@@ -9,7 +9,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync, openSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -37,7 +37,10 @@ before(async () => {
     NEARLY_NO_UPDATE: '1', NO_COLOR: '1',
   };
   for (const d of ['rec', 'story', 'out']) mkdirSync(join(box, d), { recursive: true });
-  server = spawn(process.execPath, [join(root, 'server', 'index.mjs')], { cwd: root, stdio: 'ignore', env });
+  // The server's own output goes to a file, so if it ever stops answering the
+  // failure says why instead of just "fetch failed".
+  const log = openSync(join(box, 'server.log'), 'a');
+  server = spawn(process.execPath, [join(root, 'server', 'index.mjs')], { cwd: root, stdio: ['ignore', log, log], env });
   for (let i = 0; i < 50; i++) {
     try { if ((await fetch(`http://127.0.0.1:${PORT}/health`)).ok) break; } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 100));
@@ -51,7 +54,10 @@ after(async () => {
 
 const hook = (ev, query, body) => fetch(`http://127.0.0.1:${PORT}/hooks/${ev}?${query}`, {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-}).then((r) => r.json());
+}).then((r) => r.json()).catch((e) => {
+  const said = existsSync(join(box, 'server.log')) ? readFileSync(join(box, 'server.log'), 'utf8').slice(-2000) : '';
+  throw new Error(`the server did not answer ${ev} (${e.message}); exited: ${server.exitCode}\n${said}`);
+});
 const events = (sid) => {
   const f = join(box, 'rec', `${sid}.jsonl`);
   return existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
@@ -173,7 +179,9 @@ test('the push records the branch git says is being pushed, not whatever is chec
   const sha = git(wt, 'rev-parse', 'HEAD');
   const r = spawnSync(process.execPath, [join(root, 'scripts', 'push-record.mjs'), repo], {
     encoding: 'utf8', timeout: 120_000, input: `refs/heads/claude/task-1 ${sha} refs/heads/claude/task-1 0000000000000000000000000000000000000000\n`,
-    env: { ...env, NEARLY_NO_TTY: '1', PATH: '/usr/bin:/bin' },   // no gh: stop after the record is built
+    // gh with nowhere to sign in from, so nothing is posted. Not by emptying PATH:
+    // on Windows that hides git too, and then no repository can be recognised.
+    env: { ...env, NEARLY_NO_TTY: '1', GH_CONFIG_DIR: join(box, 'no-gh-config'), GH_TOKEN: '', GITHUB_TOKEN: '' },
   });
   assert.equal(r.status, 0);
   assert.doesNotMatch(r.stdout + r.stderr, /no agent sessions recorded/, `the pushed branch was not the one looked up:\n${r.stdout}${r.stderr}`);

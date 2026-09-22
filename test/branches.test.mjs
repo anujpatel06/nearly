@@ -9,7 +9,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync, openSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync, openSync, closeSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -41,6 +41,9 @@ before(async () => {
   // failure says why instead of just "fetch failed".
   const log = openSync(join(box, 'server.log'), 'a');
   server = spawn(process.execPath, [join(root, 'server', 'index.mjs')], { cwd: root, stdio: ['ignore', log, log], env });
+  // The child has its own copy. Holding this one open kept Windows from deleting
+  // the folder afterwards.
+  closeSync(log);
   for (let i = 0; i < 50; i++) {
     try { if ((await fetch(`http://127.0.0.1:${PORT}/health`)).ok) break; } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 100));
@@ -52,9 +55,14 @@ after(async () => {
   rmSync(box, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
-const hook = (ev, query, body) => fetch(`http://127.0.0.1:${PORT}/hooks/${ev}?${query}`, {
+// Node 18's fetch can reuse a connection the server has already closed after a
+// pause, and fails the request rather than reconnecting. The real hook opens one
+// connection per call and never meets this; a test pauses between calls, so try
+// once more before calling it a failure.
+const send = (ev, query, body) => fetch(`http://127.0.0.1:${PORT}/hooks/${ev}?${query}`, {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-}).then((r) => r.json()).catch((e) => {
+}).then((r) => r.json());
+const hook = (ev, query, body) => send(ev, query, body).catch(() => send(ev, query, body)).catch((e) => {
   const said = existsSync(join(box, 'server.log')) ? readFileSync(join(box, 'server.log'), 'utf8').slice(-2000) : '';
   throw new Error(`the server did not answer ${ev} (${e.message}); exited: ${server.exitCode}\n${said}`);
 });

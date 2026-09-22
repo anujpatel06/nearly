@@ -88,8 +88,11 @@ writeFileSync(hookPath, `#!/bin/sh
 # ENXIO, when no terminal is attached. The open has to happen inside a subshell
 # too: a failed redirection is reported by the shell itself, so redirecting the
 # command's stderr does not silence it, but redirecting the subshell's does.
+# stdin is left alone: git writes the refs being pushed there, and that is how
+# a push from a worktree, or of a branch that is not checked out, is recorded as
+# the branch it actually is.
 if (: >/dev/tty) 2>/dev/null; then
-  ${RUN} push-record "${shq(repo)}" </dev/tty >/dev/tty 2>&1 || true
+  ${RUN} push-record "${shq(repo)}" >/dev/tty 2>&1 || true
 else
   NEARLY_NO_TTY=1 ${RUN} push-record "${shq(repo)}" || true
 fi
@@ -99,7 +102,7 @@ chmodSync(hookPath, 0o755);
 
 console.log(`Installed ${hookPath}`);
 console.log('');
-console.log('Next push on this repo will build the branch record and ask before posting.');
+console.log('Next push on this repo will build the branch record and post it to the open pull request.');
 console.log('Set NEARLY_URL_BASE so the comment can link to the hosted page, e.g.');
 console.log('  export NEARLY_URL_BASE=https://<user>.github.io/<repo>/recaps');
 console.log('Remove it again with: node scripts/install-push-hook.mjs "' + repo + '" --remove');

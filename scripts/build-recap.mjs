@@ -18,6 +18,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { paths } from '../server/paths.mjs';
 import { judge, judgeEnabled, RANK } from './judge.mjs';
+import { repoIdOf } from '../server/repo-id.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const recordingsDir = paths.recordings();
@@ -110,16 +111,103 @@ function samePath(a, b) {
   return real(a) === real(b);
 }
 
+// The part of one session that was spent on `branch`. A session that started on
+// one branch and switched to another belongs to both, and each branch's record
+// should show the work done on it — not the whole session twice, and not nothing.
+// The instruction that led into a branch usually comes just before the switch, so
+// it travels with the part it caused.
+function sliceForBranch(events, created, branch) {
+  let cur = created.branch;
+  let prev = null;                       // the last thing that happened, of any kind
+  const out = [];
+  for (const e of events) {
+    if (e === created) { out.push({ ...e, branch }); continue; }
+    if (e.type === 'branch') {
+      // An instruction with nothing done after it, immediately before a switch, is
+      // the one that moved the session on: it belongs to where the work went.
+      const mover = prev && prev.type === 'prompt' ? prev : null;
+      if (cur === branch && e.branch !== branch && mover && out[out.length - 1] === mover) out.pop();
+      if (e.branch === branch && cur !== branch && mover && !out.includes(mover)) out.push(mover);
+      cur = e.branch;
+      continue;
+    }
+    prev = e;
+    if (cur === branch) out.push(e);
+  }
+  if (out.length < 2) return null;
+  // Timed from the first thing done on this branch. A session that started five
+  // days earlier on another branch made a one-minute branch read "ran for 128 hours".
+  if (out[0].branch !== created.branch || out[0].at < out[1].at) out[0] = { ...out[0], at: out[1].at };
+  return out;
+}
+
+// Recordings made before branch changes were noted still hold them — in the
+// commands the agent ran. One real session made eight branches this way, each with
+// `git checkout -q -b <name>`, and all its work was filed under the first. For those
+// recordings only, read the switches back out of the allowed commands.
+const SWITCH = /^(?:checkout|switch)$/;
+function switchesIn(command) {
+  const found = [];
+  for (const part of String(command).split(/&&|\|\||;|\n/)) {
+    const w = part.trim().split(/\s+/).filter(Boolean);
+    const g = w.indexOf('git');
+    if (g === -1 || !SWITCH.test(w[g + 1] || '')) continue;
+    const rest = w.slice(g + 2);
+    if (rest.includes('--') || rest.includes('--detach') || rest.includes('-d')) continue;   // files, or no branch
+    const make = rest.findIndex((x) => /^-[bBcC]$/.test(x));
+    const name = make !== -1 ? rest[make + 1] : rest.find((x) => !x.startsWith('-'));
+    // A branch name, not a file, a commit, or a variable nobody can see.
+    if (name && /^[A-Za-z0-9._\/-]+$/.test(name) && !/^[0-9a-f]{7,40}$/.test(name) && !/\.[a-z0-9]{1,5}$/i.test(name)) found.push(name);
+  }
+  return found;
+}
+
+function inferBranches(events, created) {
+  if (events.some((e) => e.type === 'branch')) return events;
+  const out = [];
+  for (const e of events) {
+    const switched = [];
+    if (e.type === 'decision' && e.decision === 'allow' && typeof e.input?.command === 'string') {
+      // A command that first moves into another repository is about that one.
+      const cds = [...e.input.command.matchAll(/\bcd\s+("?)([^\s";&|]+)\1/g)].map((m) => m[2].replace(/^~(?=\/|$)/, process.env.HOME || ''));
+      const mine = created.worktree ? (created.repoId || repoIdOf(created.worktree)) : null;
+      const elsewhere = cds.length && mine && cds.some((d) => repoIdOf(resolve(created.worktree, d)) !== mine);
+      if (!elsewhere) switched.push(...switchesIn(e.input.command));
+    }
+    // The switch takes effect at the command that made it: that command, and the
+    // instruction that asked for it, belong to the branch it moved to.
+    for (const b of switched) out.push({ type: 'branch', branch: b, worktree: created.worktree, at: e.at, inferred: true });
+    out.push(e);
+  }
+  return out;
+}
+
+// Same repository, not same folder: a worktree and its main checkout share one.
+// Recordings from before this carry no repo id, so fall back to asking git about
+// the folder they name, and to the path itself when that folder is gone.
+function sameRepoAs(created, want, wantId) {
+  if (!want) return true;
+  const theirs = created.repoId || (created.worktree ? repoIdOf(created.worktree) : null);
+  if (wantId && theirs) return theirs === wantId;
+  return !created.worktree || samePath(created.worktree, want);
+}
+
 function loadBranch(branch, repo) {
   const want = repo || null;
+  const wantId = want ? repoIdOf(want) : null;
   const runs = [];
   for (const f of readdirSync(recordingsDir).filter((f) => f.endsWith('.jsonl'))) {
-    const { events, dropped } = parseRecording(join(recordingsDir, f));
-    if (!events.length) continue;
-    const c = events.find((e) => e.type === 'session' && e.subtype === 'created');
-    if (!c || c.branch !== branch) continue;
-    if (want && c.worktree && !samePath(c.worktree, want)) continue;
-    runs.push({ id: f.replace(/\.jsonl$/, ''), at: events[0].at, events, created: c, dropped });
+    const parsed = parseRecording(join(recordingsDir, f));
+    const { dropped } = parsed;
+    if (!parsed.events.length) continue;
+    const c = parsed.events.find((e) => e.type === 'session' && e.subtype === 'created');
+    if (!c) continue;
+    const all = inferBranches(parsed.events, c);
+    const onBranch = c.branch === branch || all.some((e) => e.type === 'branch' && e.branch === branch);
+    if (!onBranch || !sameRepoAs(c, want, wantId)) continue;
+    const events = sliceForBranch(all, c, branch);
+    if (!events) continue;
+    runs.push({ id: f.replace(/\.jsonl$/, ''), at: events[0].at, events, created: events[0], dropped });
   }
   if (!runs.length) throw new Error(`no recordings on branch "${branch}"${repo ? ` in ${repo}` : ''}`);
   runs.sort((a, b) => a.at - b.at);
@@ -658,7 +746,10 @@ if (sb.dropped) {
   console.warn(`WARNING: ${sb.dropped} unreadable line(s) in the recording.`);
   console.warn('  The record says so on the page: it cannot claim to be complete.');
 }
-if (BRANCH) { sb.kind = 'branch'; sb.branch = BRANCH; sb.name = basename(rec.repo || '') || sb.name; }
+// Named for the repository, not for whichever folder the first session ran in: a
+// worktree's folder is called something like `task-1`, and the push looks for the
+// record under the repo's name.
+if (BRANCH) { sb.kind = 'branch'; sb.branch = BRANCH; sb.name = basename(REPO || rec.repo || '') || sb.name; }
 else sb.kind = 'session';
 
 if (wantLLM) {

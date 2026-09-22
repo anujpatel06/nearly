@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { DEFAULT_TIER, ruleKey, classify as classifyWith } from './policy.mjs';
 import { paths } from './paths.mjs';
 import { rememberOutside } from './marks.mjs';
+import { repoIdOf, toplevelOf, branchOf } from './repo-id.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.NEARLY_PORT || 47653);
@@ -228,9 +229,37 @@ function attachSession({ id, name, cwd }) {
     id, name, branch, base, worktree: cwd, proc: null, attached: true, state: 'working', turns: 0, lastText: '',
     currentTool: null, usage: null, rateLimit: null, pending: new Map(), events: [], startedAt: Date.now(), buf: '',
   };
+  s.repoId = repoIdOf(cwd);
+  s.lastCwd = cwd;
   sessions.set(id, s);
-  record(id, { type: 'session', subtype: 'created', name, branch, worktree: cwd, attached: true });
+  record(id, { type: 'session', subtype: 'created', name, branch, worktree: cwd, attached: true, repoId: s.repoId });
   return s;
+}
+
+// A session is not on one branch. Agents make a branch per task and switch to it,
+// and a session in a git worktree works on that worktree's branch, not the main
+// checkout's. Filing every call under the branch the session started on left a
+// record for branches nothing was pushed from, and none for the eight that were.
+// So note each change, and let a branch's record take the part spent on it.
+function trackBranch(s, hook, force = false) {
+  if (!s || !s.attached) return;
+  const cwd = hook.cwd || s.worktree;
+  // Asking git costs a few milliseconds. Only when something could have moved:
+  // a shell command ran, the working folder changed, or a turn ended.
+  if (!force && hook.tool_name !== 'Bash' && cwd === s.lastCwd) return;
+  s.lastCwd = cwd;
+  const here = toplevelOf(cwd) || s.worktree;
+  // Working in some other repository for a moment is not a change of branch.
+  if (s.repoId && repoIdOf(here) !== s.repoId) return;
+  const b = branchOf(here);
+  if (!b || (b === s.branch && here === s.worktree)) return;
+  // Diffs are measured from where this branch started. Measured from where the
+  // session started, a new branch's first turn showed every change the session
+  // had made on every branch before it.
+  try { s.base = git(here, ['rev-parse', 'HEAD']); } catch { /* keep the old base */ }
+  s.branch = b;
+  s.worktree = here;
+  record(s.id, { type: 'branch', branch: b, worktree: here });
 }
 
 // `claude -p` does not fire SessionStart, so an attached headless session never
@@ -446,7 +475,14 @@ const server = http.createServer(async (req, res) => {
     if (!sidResolved && (attach || outside) && hook.session_id) {
       sidResolved = hook.session_id;
       if (!sessions.has(sidResolved) && attach) {
-        const made = attachSession({ id: sidResolved, name: attach.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 24) || 'repo', cwd: outsideRepo || hook.cwd || process.cwd() });
+        // Where the work is: the worktree it is sitting in, when that belongs to
+        // the same repository, rather than the main checkout it was matched to.
+        let where = outsideRepo || hook.cwd || process.cwd();
+        if (outsideRepo && hook.cwd) {
+          const top = toplevelOf(hook.cwd);
+          if (top && repoIdOf(top) === repoIdOf(outsideRepo)) where = top;
+        }
+        const made = attachSession({ id: sidResolved, name: attach.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 24) || 'repo', cwd: where });
         // Its prompt went by before anything said the session was ours. The
         // transcript still has it, and a record that starts mid-task without
         // saying what was asked is missing the part a reviewer reads first.
@@ -480,7 +516,12 @@ const server = http.createServer(async (req, res) => {
       // The same prompt twice within a few seconds is one prompt heard by two hooks.
       const text = String(hook.prompt || '');
       const echo = s && s.lastPrompt && s.lastPrompt.text === text && Date.now() - s.lastPrompt.at < 5000;
-      if (s && !echo) { s.lastPrompt = { text, at: Date.now() }; s.state = 'working'; record(sid, { type: 'prompt', text: text.slice(0, 4000) }); broadcast({ type: 'session-state', session: sid, state: s.state }); }
+      if (s && !echo) {
+        trackBranch(s, hook, true);
+        s.lastPrompt = { text, at: Date.now() }; s.state = 'working';
+        record(sid, { type: 'prompt', text: text.slice(0, 4000) });
+        broadcast({ type: 'session-state', session: sid, state: s.state });
+      }
       return hookOk(res);
     }
     if (ev === 'session-end') {
@@ -567,13 +608,14 @@ const server = http.createServer(async (req, res) => {
       const seen = s && hook.tool_use_id && s.posted?.has(hook.tool_use_id);
       if (s && hook.tool_use_id) { s.posted ||= new Set(); s.posted.add(hook.tool_use_id); if (s.posted.size > 500) s.posted.delete(s.posted.values().next().value); }
       if (s && !seen) record(sid, { type: 'post_tool', id: hook.tool_use_id, tool: hook.tool_label || hook.tool_name, duration_ms: hook.duration_ms, response: trim(hook.tool_response ?? '') });
+      if (s && !seen) trackBranch(s, hook);
       if (s && !seen && s.attached && s.worktree) postWhenOpened(s, hook);
       return hookOk(res);
     }
     if (ev === 'stop') {
       // One turn ending, heard by two hooks, is still one turn.
       if (s && s.attached && s.lastStopAt && Date.now() - s.lastStopAt < 3000) return hookOk(res);
-      if (s && s.attached) s.lastStopAt = Date.now();
+      if (s && s.attached) { s.lastStopAt = Date.now(); trackBranch(s, hook, true); }
       if (s && s.attached) {
         s.turns += 1;
         s.state = 'idle';

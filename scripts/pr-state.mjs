@@ -7,9 +7,11 @@
 
 import { spawnSync } from 'node:child_process';
 
-export function prForBranch(repo) {
+// `branch` when known: a push from a worktree, or of a branch that is not the one
+// checked out, is about that branch — not about whatever HEAD happens to be here.
+export function prForBranch(repo, branch = null) {
   if (spawnSync('gh', ['--version'], { encoding: 'utf8' }).status !== 0) return { state: 'no-gh' };
-  const r = spawnSync('gh', ['pr', 'view', '--json', 'number,url,state'], { cwd: repo, encoding: 'utf8', timeout: 15_000 });
+  const r = spawnSync('gh', ['pr', 'view', ...(branch ? [branch] : []), '--json', 'number,url,state'], { cwd: repo, encoding: 'utf8', timeout: 15_000 });
   if (r.status !== 0) {
     return /not logged|authentication|gh auth/i.test(r.stderr || '') ? { state: 'signed-out' } : { state: 'none' };
   }

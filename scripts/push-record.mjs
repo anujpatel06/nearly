@@ -43,11 +43,49 @@ const red = (s) => (COLOR ? `\x1b[31m${s}\x1b[0m` : String(s));
 
 function bail(msg) { if (msg) console.error(dim(`nearly: ${msg}`)); process.exit(0); }
 
-let branch;
-try {
-  branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
-} catch { bail('could not read the branch'); }
-if (!branch || branch === 'HEAD') bail('detached HEAD, nothing to record');
+// Which branch is being pushed. git tells a pre-push hook exactly that, one line
+// per ref, on stdin. This used to read HEAD in the repo's main folder instead —
+// wrong for a push from a git worktree, which runs this same hook with its own
+// branch, and wrong for `git push origin other-branch`. A session that pushed
+// eight branches from a worktree was told "no agent sessions recorded" eight
+// times, about the main folder's branch.
+async function pushedBranches() {
+  if (process.env.NEARLY_PUSH_BRANCH) return [process.env.NEARLY_PUSH_BRANCH];
+  if (!process.stdin.isTTY) {
+    const text = await new Promise((done) => {
+      let s = '';
+      const t = setTimeout(() => done(s), 1500);
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (d) => (s += d));
+      process.stdin.on('end', () => { clearTimeout(t); done(s); });
+      process.stdin.on('error', () => { clearTimeout(t); done(s); });
+    });
+    const refs = text.split('\n').map((l) => l.trim().split(/\s+/))
+      .filter((f) => f.length >= 2 && /^refs\/heads\//.test(f[0]) && !/^0+$/.test(f[1]))   // deletes push nothing
+      .map((f) => f[0].slice('refs/heads/'.length));
+    if (refs.length) return [...new Set(refs)];
+  }
+  // Run by hand, or by an old hook that gave stdin to the terminal: the branch
+  // checked out where the push is happening — this worktree, when it is one.
+  const { toplevelOf, branchOf, repoIdOf } = await import('../server/repo-id.mjs');
+  const here = toplevelOf(process.cwd());
+  const at = here && repoIdOf(here) === repoIdOf(repo) ? here : repo;
+  const b = branchOf(at);
+  return b ? [b] : [];
+}
+
+const pushed = await pushedBranches();
+if (!pushed.length) bail('detached HEAD, nothing to record');
+// Several branches in one push: one record each, as separate runs, so one branch
+// with nothing recorded does not stop the next from being handed over.
+if (pushed.length > 1) {
+  for (const b of pushed) {
+    spawnSync(process.execPath, [fileURLToPath(import.meta.url), repo],
+      { stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, NEARLY_PUSH_BRANCH: b } });
+  }
+  process.exit(0);
+}
+const branch = pushed[0];
 
 const args = ['--branch', branch, '--repo', repo];
 if (!WANT_AUDIO) args.push('--no-audio');
@@ -114,7 +152,7 @@ if (!hasGh) {
   process.exit(0);
 }
 const { prForBranch } = await import('./pr-state.mjs');
-const pr = prForBranch(repo);
+const pr = prForBranch(repo, branch);
 if (pr.state !== 'open') {
   const why = pr.state === 'signed-out'
     ? 'gh is installed but not signed in. Run `gh auth login`, then push again.'

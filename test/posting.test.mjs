@@ -39,7 +39,8 @@ exit 0
 }
 const ghCalls = () => (existsSync(ghLog) ? readFileSync(ghLog, 'utf8') : '');
 
-// An unattended session on the branch: 87 minutes, one read, one write, one refusal.
+// An unattended session on the branch: a few steps, then a long silence, then the
+// turn's diff — 87 minutes end to end, of which only the start is work.
 function recording(sid) {
   const t0 = 1789000000000;
   const at = (s) => t0 + s * 1000;
@@ -88,14 +89,49 @@ test('a push with no terminal posts the record to the open pull request', { skip
   assert.doesNotMatch(r.stdout, /No terminal to ask on/);
 });
 
-test('an unattended record does not claim a supervisor, and says the time in hours', { skip }, () => {
+test('an unattended record does not claim a supervisor', { skip }, () => {
   const c = cover();
   const labels = c.stats.map(([k]) => k);
   assert.ok(!labels.some((k) => /^Asked|Waiting on/.test(k)), `columns about a supervisor who was not there: ${labels}`);
-  assert.equal(Object.fromEntries(c.stats)['Ran for'], '1h 27m');
   assert.doesNotMatch(c.narration, /supervision/);
   assert.match(c.narration, /nobody watching/);
-  assert.match(c.narration, /1 hour 27 minutes/);
+});
+
+test('a night of silence is not time the agent worked', { skip }, () => {
+  // A branch touched on two days read "ran for 14 hours 57 minutes" on a real
+  // pull request. It worked for about two.
+  const stats = Object.fromEntries(cover().stats);
+  assert.equal(stats['Ran for'], '5m', `wall clock counted as work: ${stats['Ran for']}`);
+  assert.equal(stats['Spread over'], '1h 27m');
+  assert.match(cover().narration, /worked for 5 minutes, spread across 1 hour 27 minutes/);
+});
+
+test('a session that ran straight through says nothing about being spread out', { skip }, () => {
+  const sid = '22222222-2222-4333-8444-555555555555';
+  const t0 = 1789100000000;
+  const lines = [
+    { type: 'session', subtype: 'created', name: 'site', branch: 'feat/steady', worktree: repo, attached: true, at: t0 },
+    ...Array.from({ length: 20 }, (_, i) => ({ type: 'decision', id: `d${i}`, decision: 'allow', why: 'allowed unattended — nobody was asked', scope: 'auto', tool: 'Read', input: { file_path: join(repo, 'a.txt') }, tier: 'log', at: t0 + (i + 1) * 60_000 })),
+    { type: 'session', subtype: 'exited', reason: 'other', at: t0 + 21 * 60_000 },
+  ].map((e) => JSON.stringify({ ...e, session: sid }));
+  writeFileSync(join(env.NEARLY_RECORDINGS, `${sid}.jsonl`), lines.join('\n') + '\n');
+  const r = spawnSync(process.execPath, [join(root, 'scripts', 'build-recap.mjs'), '--branch', 'feat/steady', '--repo', repo, '--no-audio'],
+    { encoding: 'utf8', timeout: 120_000, env });
+  assert.equal(r.status, 0, r.stderr);
+  const c = JSON.parse(readFileSync(join(env.NEARLY_STORY, 'site--feat-steady.json'), 'utf8')).scenes.find((s) => s.kind === 'cover');
+  const stats = Object.fromEntries(c.stats);
+  assert.equal(stats['Ran for'], '20m');   // the twenty minutes between its steps
+  assert.equal(stats['Spread over'], undefined, 'a session with no breaks was described as spread out');
+  assert.doesNotMatch(c.narration, /spread across/);
+});
+
+test('the comment says when the record was true', { skip }, () => {
+  // A record is rewritten on a push. On a merged pull request it is a snapshot,
+  // and a reviewer reading "0 refused" deserves to know as of when.
+  const r = spawnSync(process.execPath, [join(root, 'scripts', 'post-recap.mjs'), 'site--feat-x', '--dry-run'],
+    { encoding: 'utf8', timeout: 60_000, env });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /The session this describes ended \d+ \w+, \d\d:\d\d; a later push updates this comment/);
 });
 
 test('a file write allowed without asking is not called read-only', { skip }, () => {

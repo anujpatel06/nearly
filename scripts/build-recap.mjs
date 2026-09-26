@@ -311,7 +311,19 @@ function buildStoryboard({ id, events, runs: sbRuns = 1 }) {
   const init = events.find((e) => e.type === 'init');
   const t0 = events[0].at;
   const tEnd = events.at(-1).at;
-  const durS = (tEnd - t0) / 1000;
+  // Wall clock counts the night you were asleep. A branch touched on Monday and
+  // again on Tuesday read "ran for 14 hours 57 minutes", which nobody watching
+  // the agent would recognise: it worked for about two. So time between one step
+  // and the next counts only while the session is plausibly still going — a gap
+  // longer than this is a break, and breaks are not work.
+  const BREAK_MS = 5 * 60_000;
+  const marks = events.map((e) => e.at).filter((n) => typeof n === 'number').sort((a, b) => a - b);
+  let workedMs = 0;
+  for (let i = 1; i < marks.length; i++) workedMs += Math.min(marks[i] - marks[i - 1], BREAK_MS);
+  const spanS = (tEnd - t0) / 1000;
+  const durS = marks.length > 1 ? workedMs / 1000 : spanS;
+  // Only worth saying when the two differ enough to matter.
+  const spread = spanS > durS * 1.5 + 60 ? spanS : null;
   const worktree = created?.worktree;
   const canGit = worktree && existsSync(worktree);
 
@@ -377,13 +389,14 @@ function buildStoryboard({ id, events, runs: sbRuns = 1 }) {
     branch: created?.branch || null,
     stats: [
       ['Ran for', clock(durS), ''],
+      ...(spread ? [['Spread over', clock(spread), '']] : []),
       ...(nobodyThere ? [] : [[V('Waiting on a human', 'Waiting on you'), `${secs(humanWaitMs)}s`, 'ask']]),
       ['Tool calls', String(toolUses.length), ''],
       ...(nobodyThere ? [] : [[V('Asked ' + AUTHOR, 'Asked you'), String(humanDecisions.length), '']]),
       ['Refused', String(denied.length), denied.length ? 'deny' : ''],
       ['Rolled back', String(undos.length), undos.length ? 'undo' : ''],
     ],
-    narration: `${sbRuns > 1 ? `${plural(sbRuns, 'agent session')} on this branch, ${spoken(durS)} in total` : `Agent ${name} ran for ${spoken(durS)}`}${nobodyThere ? ', with nobody watching' : ` under ${supPoss} supervision`}. ${plural(toolUses.length, 'tool call')}, ${nobodyThere ? '' : `${humanDecisions.length} held for a decision, `}${denied.length} refused${undos.length ? `, ${plural(undos.length, 'turn')} rolled back` : ''}.`,
+    narration: `${sbRuns > 1 ? `${plural(sbRuns, 'agent session')} on this branch, ${spoken(durS)} of work in total` : `Agent ${name} worked for ${spoken(durS)}`}${spread ? `, spread across ${spoken(spread)}` : ''}${nobodyThere ? ', with nobody watching' : ` under ${supPoss} supervision`}. ${plural(toolUses.length, 'tool call')}, ${nobodyThere ? '' : `${humanDecisions.length} held for a decision, `}${denied.length} refused${undos.length ? `, ${plural(undos.length, 'turn')} rolled back` : ''}.`,
   });
 
   // 2. intent. One scene per thing that was asked for, in order, so a branch
@@ -540,7 +553,7 @@ function buildStoryboard({ id, events, runs: sbRuns = 1 }) {
   });
 
   return {
-    id, name, branch: created?.branch, runs: sbRuns, cwd: worktree || null, attached: !!created?.attached, model, date: dateStr, startedAt: t0, durationS: durS,
+    id, name, branch: created?.branch, runs: sbRuns, cwd: worktree || null, attached: !!created?.attached, model, date: dateStr, startedAt: t0, durationS: durS, spanS, lastEventAt: tEnd,
     humanWaitS: humanWaitMs / 1000, avatar: AVATAR, author: AUTHOR, audience: AUDIENCE, supervisor: AUTHOR, voice: noAudio ? null : VOICE,
     project: projectUrl(),
     generatedAt: new Date().toISOString(), scenes,

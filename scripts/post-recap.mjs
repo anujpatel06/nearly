@@ -41,6 +41,15 @@ const slug = file.replace(/\.json$/, '');
 const cover = sb.scenes.find((s) => s.kind === 'cover');
 const outcome = sb.scenes.find((s) => s.kind === 'outcome');
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+// When this was true. The comment is rewritten on every push, so on a branch that
+// has moved on — or one whose pull request is already merged — a reader needs to
+// know the numbers are from a moment, not from now.
+const asOf = (() => {
+  const t = sb.lastEventAt || sb.startedAt;
+  if (!t) return null;
+  const d = new Date(t);
+  return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}, ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+})();
 
 // Plain words for the labels a judgement puts on a refusal.
 const WOULD_HAVE = {
@@ -95,7 +104,7 @@ sb.scenes.forEach((s, i) => { lines.push(`${i + 1}. **${s.kind}** — ${s.narrat
 lines.push('');
 lines.push('</details>');
 lines.push('');
-lines.push(`<sub>Every number above was computed from the session recording. ${sb.polished ? 'Sentences were rewritten by a model; facts were not.' : 'No model wrote any of it.'}${sb.judgement ? ` What each stopped command would have hit, the ordering, and the two notes above are judgements from ${sb.judgement.by}, not counts.` : ''}${urlBase ? '' : ' The narrated version is not published anywhere; `nearly publish` puts it on GitHub Pages.'}</sub>`);
+lines.push(`<sub>${asOf ? `The session this describes ended ${asOf}; a later push updates this comment. ` : ''}Every number above was computed from the session recording. ${sb.polished ? 'Sentences were rewritten by a model; facts were not.' : 'No model wrote any of it.'}${sb.judgement ? ` What each stopped command would have hit, the ordering, and the two notes above are judgements from ${sb.judgement.by}, not counts.` : ''}${urlBase ? '' : ' The narrated version is not published anywhere; `nearly publish` puts it on GitHub Pages.'}</sub>`);
 // A hidden marker so we can find our own comment again on the next push and
 // edit it, instead of stacking a new one on every push until nobody reads any.
 // Deliberately carries no product name. This string is how a comment is
